@@ -1,8 +1,10 @@
+// Package cmd contains top-level command handlers for easy-railway.
 package cmd
 
+// Auth handles authentication commands.
 func Auth(args []string) error {
 	fs := newFlagSet("auth")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 
@@ -22,6 +24,6 @@ func Auth(args []string) error {
 	}
 }
 
-func authLogin(args []string) error { return nil }
-func authLogout() error             { return nil }
-func authWhoami() error             { return nil }
+func authLogin(_ []string) error { return nil }
+func authLogout() error          { return nil }
+func authWhoami() error          { return nil }

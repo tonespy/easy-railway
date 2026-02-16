@@ -1,3 +1,4 @@
+// easy-railway is a CLI for managing Railway projects with local-first workflows.
 package main
 
 import (
@@ -49,7 +50,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 		printUsage(outLog)
 		return 0
 	case "-v", "--version", "version":
-		fmt.Fprintln(stdout, "easy-railway", version)
+		if _, err := fmt.Fprintln(stdout, "easy-railway", version); err != nil {
+			errLog.Error("write version output: %v", err)
+			return 1
+		}
 		return 0
 	}
 

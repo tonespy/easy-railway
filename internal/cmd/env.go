@@ -1,8 +1,9 @@
 package cmd
 
+// Env handles environment variable commands.
 func Env(args []string) error {
 	fs := newFlagSet("env")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 
@@ -11,7 +12,7 @@ func Env(args []string) error {
 	}
 
 	switch fs.Arg(0) {
-	case "list":
+	case subcommandList:
 		return envList(fs.Args()[1:])
 	case "get":
 		return envGet(fs.Args()[1:])
@@ -26,8 +27,8 @@ func Env(args []string) error {
 	}
 }
 
-func envList(args []string) error { return nil }
-func envGet(args []string) error  { return nil }
-func envSet(args []string) error  { return nil }
-func envPush(args []string) error { return nil }
-func envPull(args []string) error { return nil }
+func envList(_ []string) error { return nil }
+func envGet(_ []string) error  { return nil }
+func envSet(_ []string) error  { return nil }
+func envPush(_ []string) error { return nil }
+func envPull(_ []string) error { return nil }

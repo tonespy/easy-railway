@@ -1,8 +1,9 @@
 package cmd
 
+// Sync handles git hook synchronization commands.
 func Sync(args []string) error {
 	fs := newFlagSet("sync")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 
@@ -20,5 +21,5 @@ func Sync(args []string) error {
 	}
 }
 
-func syncInstall(args []string) error   { return nil }
-func syncUninstall(args []string) error { return nil }
+func syncInstall(_ []string) error   { return nil }
+func syncUninstall(_ []string) error { return nil }

@@ -1,8 +1,9 @@
 package cmd
 
+// Service handles service management commands.
 func Service(args []string) error {
 	fs := newFlagSet("service")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 
@@ -11,11 +12,11 @@ func Service(args []string) error {
 	}
 
 	switch fs.Arg(0) {
-	case "list":
+	case subcommandList:
 		return serviceList(fs.Args()[1:])
-	case "create":
+	case subcommandCreate:
 		return serviceCreate(fs.Args()[1:])
-	case "delete":
+	case subcommandDelete:
 		return serviceDelete(fs.Args()[1:])
 	case "link":
 		return serviceLink(fs.Args()[1:])
@@ -24,7 +25,7 @@ func Service(args []string) error {
 	}
 }
 
-func serviceList(args []string) error   { return nil }
-func serviceCreate(args []string) error { return nil }
-func serviceDelete(args []string) error { return nil }
-func serviceLink(args []string) error   { return nil }
+func serviceList(_ []string) error   { return nil }
+func serviceCreate(_ []string) error { return nil }
+func serviceDelete(_ []string) error { return nil }
+func serviceLink(_ []string) error   { return nil }
