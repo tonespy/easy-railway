@@ -1,3 +1,4 @@
+// Package log provides lightweight structured-style CLI output helpers.
 package log
 
 import (
@@ -65,7 +66,9 @@ func (l *Logger) Print(format string, args ...any) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	fmt.Fprint(l.out, msg)
+	if _, err := fmt.Fprint(l.out, msg); err != nil {
+		return
+	}
 }
 
 func (l *Logger) log(symbol, color, format string, args ...any) {
@@ -75,9 +78,13 @@ func (l *Logger) log(symbol, color, format string, args ...any) {
 	defer l.mu.Unlock()
 
 	if l.color {
-		fmt.Fprintf(l.out, "  %s%s%s %s\n", color, symbol, colorReset, msg)
+		if _, err := fmt.Fprintf(l.out, "  %s%s%s %s\n", color, symbol, colorReset, msg); err != nil {
+			return
+		}
 	} else {
-		fmt.Fprintf(l.out, "  %s %s\n", symbol, msg)
+		if _, err := fmt.Fprintf(l.out, "  %s %s\n", symbol, msg); err != nil {
+			return
+		}
 	}
 }
 
@@ -99,10 +106,17 @@ func shouldColor(out io.Writer) bool {
 // Default is the package-level logger writing to stderr.
 var Default = New(os.Stderr)
 
-// Package-level convenience functions that delegate to Default.
+// Info writes an informational message via the default logger.
+func Info(format string, args ...any) { Default.Info(format, args...) }
 
-func Info(format string, args ...any)    { Default.Info(format, args...) }
+// Success writes a success message via the default logger.
 func Success(format string, args ...any) { Default.Success(format, args...) }
-func Warn(format string, args ...any)    { Default.Warn(format, args...) }
-func Error(format string, args ...any)   { Default.Error(format, args...) }
-func Print(format string, args ...any)   { Default.Print(format, args...) }
+
+// Warn writes a warning message via the default logger.
+func Warn(format string, args ...any) { Default.Warn(format, args...) }
+
+// Error writes an error message via the default logger.
+func Error(format string, args ...any) { Default.Error(format, args...) }
+
+// Print writes plain text via the default logger.
+func Print(format string, args ...any) { Default.Print(format, args...) }

@@ -1,0 +1,26 @@
+#!/bin/bash
+set -euo pipefail
+
+REPO_ROOT=$(git rev-parse --show-toplevel)
+cd "$REPO_ROOT"
+
+echo "Running pre-commit checks"
+
+if ! command -v go >/dev/null 2>&1; then
+  echo "go is not installed or not on PATH"
+  exit 1
+fi
+
+if ! command -v golangci-lint >/dev/null 2>&1; then
+  echo "golangci-lint is not installed or not on PATH"
+  echo "Install: https://golangci-lint.run/usage/install/"
+  exit 1
+fi
+
+echo "Running lint"
+golangci-lint run ./...
+
+echo "Running tests"
+go test ./...
+
+echo "Pre-commit checks passed"
