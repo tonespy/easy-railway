@@ -21,7 +21,7 @@ jobs:
 
       - name: Coverage
         env:
-          COVERALLS_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COVERALLS_TOKEN: ${{ secrets.COVERALLS_TOKEN }}
         run: |
           go test -race -covermode atomic -coverprofile=profile.cov ./...
           go install github.com/mattn/goveralls@latest
