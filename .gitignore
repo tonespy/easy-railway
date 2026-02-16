@@ -1,0 +1,8 @@
+.DS_Store
+bin/
+*.env
+*.env.*
+tmp/
+dist/
+completions/
+manpages/
