@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/tonespy/easy-railway/internal/api"
 	"github.com/tonespy/easy-railway/internal/auth"
@@ -16,18 +17,20 @@ import (
 
 // authDeps holds injectable dependencies for auth commands.
 type authDeps struct {
-	prompter  *prompt.Prompter
-	apiClient *api.Client
-	logger    *log.Logger
-	getenv    func(string) string
+	prompter    *prompt.Prompter
+	apiClient   *api.Client
+	logger      *log.Logger
+	getenv      func(string) string
+	oauthConfig *auth.OAuthConfig
 }
 
 func defaultAuthDeps() *authDeps {
 	return &authDeps{
-		prompter:  prompt.Default,
-		apiClient: api.New(),
-		logger:    log.Default,
-		getenv:    os.Getenv,
+		prompter:    prompt.Default,
+		apiClient:   api.New(),
+		logger:      log.Default,
+		getenv:      os.Getenv,
+		oauthConfig: auth.DefaultOAuthConfig(),
 	}
 }
 
@@ -51,12 +54,20 @@ func Login(args []string) error {
 }
 
 // Logout handles the logout command.
-func Logout(_ []string) error {
+func Logout(args []string) error {
+	if len(args) > 0 {
+		return fmt.Errorf("logout: additional arguments are not expected: %q", args)
+	}
+
 	return authLogout(defaultAuthDeps())
 }
 
 // Whoami handles the whoami command.
-func Whoami(_ []string) error {
+func Whoami(args []string) error {
+	if len(args) > 0 {
+		return fmt.Errorf("whoami: additional arguments are not expected: %q", args)
+	}
+
 	return authWhoami(defaultAuthDeps())
 }
 
@@ -91,22 +102,16 @@ func authLogin(deps *authDeps, args []string) error {
 		return err
 	}
 
-	// Determine auth method.
-	if !apiKeyFlag {
-		choice, err := deps.prompter.Select(
-			"How would you like to log in?",
-			[]string{"API key", "Browser (coming soon)"},
-		)
-		if err != nil {
-			return fmt.Errorf("login: %w", err)
-		}
-
-		if choice == 1 {
-			deps.logger.Warn("Browser authentication is not yet available.")
-			return nil
-		}
+	// --api-key flag opts into API key flow; otherwise default to browser.
+	if apiKeyFlag {
+		return authAPIKeyLogin(deps, credentialsPath, encryptFlag, tokenTypeFlag, workspaceIDFlag)
 	}
 
+	return authBrowserLogin(deps, credentialsPath, encryptFlag)
+}
+
+// authAPIKeyLogin handles the API key login flow.
+func authAPIKeyLogin(deps *authDeps, credentialsPath, encryptFlag, tokenTypeFlag, workspaceIDFlag string) error {
 	// Resolve token type: flag → prompt.
 	tokenType, err := resolveTokenType(deps, tokenTypeFlag)
 	if err != nil {
@@ -286,6 +291,106 @@ func validateToken(deps *authDeps, tokenType, token, workspaceID string) (*token
 	return meta, nil
 }
 
+const browserLoginTimeout = 2 * time.Minute
+
+func authBrowserLogin(deps *authDeps, credentialsPath, encryptFlag string) error {
+	cfg := deps.oauthConfig
+
+	// Ask about long-lived sessions (offline_access scope).
+	scopes := "openid email profile"
+
+	keepIdx, err := deps.prompter.Select(
+		"Keep me logged in? (uses refresh tokens for long-lived sessions)",
+		[]string{"Yes (recommended)", "No (session expires in ~1 hour)"},
+	)
+	if err != nil {
+		return fmt.Errorf("login: %w", err)
+	}
+
+	if keepIdx == 0 {
+		scopes += " offline_access"
+	}
+
+	// Generate PKCE and state.
+	pkce, err := auth.GeneratePKCE()
+	if err != nil {
+		return fmt.Errorf("login: %w", err)
+	}
+
+	state, err := auth.GenerateState()
+	if err != nil {
+		return fmt.Errorf("login: %w", err)
+	}
+
+	authURL := auth.BuildAuthURL(cfg, pkce, state, scopes)
+
+	deps.logger.Info("Opening browser for authentication...")
+	deps.logger.Info("If the browser doesn't open, visit:\n  %s", authURL)
+
+	if err := cfg.OpenBrowser(authURL); err != nil {
+		deps.logger.Warn("Could not open browser: %v", err)
+		deps.logger.Info("Please open the URL above manually.")
+	}
+
+	// Wait for the OAuth callback.
+	ctx, cancel := context.WithTimeout(context.Background(), browserLoginTimeout)
+	defer cancel()
+
+	code, err := auth.ListenForCallback(ctx, cfg, state)
+	if err != nil {
+		return fmt.Errorf("login: %w", err)
+	}
+
+	// Exchange the authorization code for tokens.
+	deps.logger.Info("Exchanging authorization code...")
+
+	result, err := auth.ExchangeCode(cfg, code, pkce)
+	if err != nil {
+		return fmt.Errorf("login: %w", err)
+	}
+
+	// Validate by calling the me endpoint with the access token.
+	user, err := deps.apiClient.Me(context.Background(), result.AccessToken)
+	if err != nil {
+		return fmt.Errorf("login: validate OAuth token: %w", err)
+	}
+
+	// Build credential store.
+	store, err := buildStore(deps, credentialsPath, encryptFlag)
+	if err != nil {
+		return err
+	}
+
+	now := cfg.Now
+	if now == nil {
+		now = time.Now
+	}
+
+	creds := &auth.Credentials{
+		Type:         auth.TypeAccount,
+		AccessToken:  result.AccessToken,
+		RefreshToken: result.RefreshToken,
+		ExpiresAt:    now().Add(time.Duration(result.ExpiresIn) * time.Second),
+		UserID:       user.ID,
+		UserName:     user.Name,
+		UserEmail:    user.Email,
+	}
+
+	if err := store.Save(creds); err != nil {
+		return fmt.Errorf("login: %w", err)
+	}
+
+	deps.logger.Success("Logged in as %s (%s)", user.Name, user.Email)
+
+	if result.RefreshToken != "" {
+		deps.logger.Info("Session will auto-refresh when expired.")
+	} else {
+		deps.logger.Info("Session expires in %d seconds.", result.ExpiresIn)
+	}
+
+	return nil
+}
+
 func authLogout(deps *authDeps) error {
 	credPath, err := resolveCredPath(deps, "")
 	if err != nil {
@@ -319,6 +424,20 @@ func authWhoami(deps *authDeps) error {
 		deps.logger.Print("Name:   %s\n", creds.UserName)
 		deps.logger.Print("Email:  %s\n", creds.UserEmail)
 		deps.logger.Print("ID:     %s\n", creds.UserID)
+
+		if creds.AccessToken != "" {
+			deps.logger.Print("Auth:   OAuth (browser)\n")
+
+			if !creds.ExpiresAt.IsZero() {
+				deps.logger.Print("Expires: %s\n", creds.ExpiresAt.Format(time.RFC3339))
+			}
+
+			if creds.RefreshToken != "" {
+				deps.logger.Print("Refresh: enabled\n")
+			}
+		} else {
+			deps.logger.Print("Auth:   API key\n")
+		}
 	case auth.TypeWorkspace:
 		deps.logger.Print("Type:       %s\n", creds.Type)
 		deps.logger.Print("Workspace:  %s (%s)\n", creds.WorkspaceName, creds.WorkspaceID)
@@ -415,7 +534,10 @@ func resolvePassword(deps *authDeps, encryptFlag string) ([]byte, error) {
 
 func printLoginHelp(l *log.Logger) {
 	l.Print("Usage: easy-railway login [flags]\n\n")
-	l.Print("Flags:\n")
+	l.Print("Authentication methods:\n")
+	l.Print("  Browser (default)   OAuth2 login via your browser\n")
+	l.Print("  API key             Use --api-key flag for token-based auth\n")
+	l.Print("\nFlags:\n")
 	l.Print("  --api-key, -apk                   Use API key authentication\n")
 	l.Print("  --token-type, -tkt TYPE            Token type: account, workspace, project\n")
 	l.Print("  --workspace-id, -wid ID            Workspace ID (for workspace tokens)\n")
@@ -429,6 +551,8 @@ func printLoginHelp(l *log.Logger) {
 }
 
 // loadCredentials loads credentials from the store, handling encrypted files.
+// If the credential is an expired OAuth token with a refresh token, it
+// automatically refreshes and re-saves the updated credentials.
 func loadCredentials(deps *authDeps) (*auth.Credentials, error) {
 	credPath, err := resolveCredPath(deps, "")
 	if err != nil {
@@ -457,5 +581,49 @@ func loadCredentials(deps *authDeps) (*auth.Credentials, error) {
 		return nil, fmt.Errorf("auth: not logged in — run 'easy-railway login'")
 	}
 
+	// Auto-refresh expired OAuth tokens.
+	if creds.NeedsRefresh() {
+		if err := refreshCredentials(deps, creds, store); err != nil {
+			return nil, err
+		}
+	} else if creds.IsExpired() {
+		return nil, fmt.Errorf("auth: session expired — run 'easy-railway login' to re-authenticate")
+	}
+
 	return creds, nil
+}
+
+// refreshCredentials refreshes an expired OAuth token and persists the updated credentials.
+func refreshCredentials(deps *authDeps, creds *auth.Credentials, store auth.Store) error {
+	cfg := deps.oauthConfig
+	if cfg == nil {
+		cfg = auth.DefaultOAuthConfig()
+	}
+
+	deps.logger.Debug("Access token expired, refreshing...")
+
+	result, err := auth.RefreshAccessToken(cfg, creds.RefreshToken)
+	if err != nil {
+		return fmt.Errorf("auth: refresh token: %w", err)
+	}
+
+	now := cfg.Now
+	if now == nil {
+		now = time.Now
+	}
+
+	creds.AccessToken = result.AccessToken
+	creds.ExpiresAt = now().Add(time.Duration(result.ExpiresIn) * time.Second)
+
+	if result.RefreshToken != "" {
+		creds.RefreshToken = result.RefreshToken
+	}
+
+	if err := store.Save(creds); err != nil {
+		return fmt.Errorf("auth: save refreshed credentials: %w", err)
+	}
+
+	deps.logger.Debug("Token refreshed successfully.")
+
+	return nil
 }

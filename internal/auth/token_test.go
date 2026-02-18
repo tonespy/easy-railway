@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestFileStoreRoundTrip(t *testing.T) {
@@ -304,5 +305,96 @@ func TestResolvePathFlagOverridesEnv(t *testing.T) {
 
 	if got != "/flag/path.json" {
 		t.Fatalf("expected flag path to win, got %q", got)
+	}
+}
+
+func TestBearerTokenOAuth(t *testing.T) {
+	t.Parallel()
+
+	c := &Credentials{Token: "api-key", AccessToken: "oauth-token"}
+
+	if got := c.BearerToken(); got != "oauth-token" {
+		t.Fatalf("expected %q, got %q", "oauth-token", got)
+	}
+}
+
+func TestBearerTokenAPIKey(t *testing.T) {
+	t.Parallel()
+
+	c := &Credentials{Token: "api-key"}
+
+	if got := c.BearerToken(); got != "api-key" {
+		t.Fatalf("expected %q, got %q", "api-key", got)
+	}
+}
+
+func TestIsExpiredZero(t *testing.T) {
+	t.Parallel()
+
+	c := &Credentials{Token: "api-key"}
+
+	if c.IsExpired() {
+		t.Fatal("API key with zero ExpiresAt should not be expired")
+	}
+}
+
+func TestIsExpiredFuture(t *testing.T) {
+	t.Parallel()
+
+	c := &Credentials{AccessToken: "tok", ExpiresAt: time.Now().Add(time.Hour)}
+
+	if c.IsExpired() {
+		t.Fatal("token expiring in the future should not be expired")
+	}
+}
+
+func TestIsExpiredPast(t *testing.T) {
+	t.Parallel()
+
+	c := &Credentials{AccessToken: "tok", ExpiresAt: time.Now().Add(-time.Hour)}
+
+	if !c.IsExpired() {
+		t.Fatal("token expiring in the past should be expired")
+	}
+}
+
+func TestNeedsRefreshTrue(t *testing.T) {
+	t.Parallel()
+
+	c := &Credentials{
+		AccessToken:  "tok",
+		RefreshToken: "refresh",
+		ExpiresAt:    time.Now().Add(-time.Hour),
+	}
+
+	if !c.NeedsRefresh() {
+		t.Fatal("expired token with refresh token should need refresh")
+	}
+}
+
+func TestNeedsRefreshNoRefreshToken(t *testing.T) {
+	t.Parallel()
+
+	c := &Credentials{
+		AccessToken: "tok",
+		ExpiresAt:   time.Now().Add(-time.Hour),
+	}
+
+	if c.NeedsRefresh() {
+		t.Fatal("expired token without refresh token should not need refresh")
+	}
+}
+
+func TestNeedsRefreshNotExpired(t *testing.T) {
+	t.Parallel()
+
+	c := &Credentials{
+		AccessToken:  "tok",
+		RefreshToken: "refresh",
+		ExpiresAt:    time.Now().Add(time.Hour),
+	}
+
+	if c.NeedsRefresh() {
+		t.Fatal("non-expired token should not need refresh")
 	}
 }

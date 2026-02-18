@@ -8,12 +8,15 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/tonespy/easy-railway/internal/log"
 )
 
 const defaultEndpoint = "https://backboard.railway.com/graphql/v2"
+
+const redactedValue = "[REDACTED]"
 
 // Client executes Railway GraphQL requests.
 type Client struct {
@@ -63,6 +66,7 @@ func (c *Client) doWithHeaders(ctx context.Context, headers map[string]string, q
 	}
 
 	c.logger.Debug("POST %s", c.baseURL)
+	c.traceHeaders(headers)
 	c.logger.Trace("request body:\n%s", prettyJSON(body))
 
 	start := time.Now()
@@ -103,6 +107,56 @@ func (c *Client) doWithHeaders(ctx context.Context, headers map[string]string, q
 	}
 
 	return nil
+}
+
+func (c *Client) traceHeaders(headers map[string]string) {
+	if len(headers) == 0 {
+		return
+	}
+
+	raw, err := json.Marshal(redactHeaders(headers))
+	if err != nil {
+		c.logger.Trace("request headers: %v", redactHeaders(headers))
+
+		return
+	}
+
+	c.logger.Trace("request headers:\n%s", prettyJSON(raw))
+}
+
+func redactHeaders(headers map[string]string) map[string]string {
+	redacted := make(map[string]string, len(headers))
+
+	for key, value := range headers {
+		if isSensitiveHeader(key) {
+			redacted[key] = redactHeaderValue(key, value)
+			continue
+		}
+
+		redacted[key] = value
+	}
+
+	return redacted
+}
+
+func isSensitiveHeader(name string) bool {
+	switch strings.ToLower(name) {
+	case "authorization", "proxy-authorization", "project-access-token", "x-api-key", "x-auth-token":
+		return true
+	default:
+		return false
+	}
+}
+
+func redactHeaderValue(name, value string) string {
+	if strings.EqualFold(name, "authorization") || strings.EqualFold(name, "proxy-authorization") {
+		parts := strings.Fields(value)
+		if len(parts) >= 2 {
+			return parts[0] + " " + redactedValue
+		}
+	}
+
+	return redactedValue
 }
 
 // prettyJSON formats raw JSON bytes with indentation for readable trace output.

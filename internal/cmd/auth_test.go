@@ -2,12 +2,15 @@ package cmd
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/tonespy/easy-railway/internal/api"
 	"github.com/tonespy/easy-railway/internal/auth"
@@ -275,10 +278,10 @@ func TestLoginInteractiveSelect(t *testing.T) {
 
 	credPath := filepath.Join(t.TempDir(), "creds.json")
 
-	// Prompt: "1" API key method, "1" Account token, token value, "1" No encrypt.
-	deps, _ := newTestDeps(t, "1\n1\ninteractive-token\n1\n", srv, nil)
+	// Prompt: "1" Account token, token value, "1" No encrypt.
+	deps, _ := newTestDeps(t, "1\ninteractive-token\n1\n", srv, nil)
 
-	err := authLogin(deps, []string{"--credentials-path", credPath})
+	err := authLogin(deps, []string{"--api-key", "--credentials-path", credPath})
 	if err != nil {
 		t.Fatalf("authLogin: %v", err)
 	}
@@ -738,5 +741,359 @@ func TestLoginPlainFileIsValidJSON(t *testing.T) {
 
 	if !json.Valid(data) {
 		t.Fatalf("expected valid JSON, got %q", string(data))
+	}
+}
+
+// testTokenExchangeServer returns an httptest.Server that handles both the
+// OAuth token exchange and the "me" GraphQL query.
+func testTokenExchangeServer(t *testing.T) *httptest.Server {
+	t.Helper()
+
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ct := r.Header.Get("Content-Type")
+
+		// Token exchange endpoint (form POST).
+		if ct == "application/x-www-form-urlencoded" {
+			if err := r.ParseForm(); err != nil {
+				t.Errorf("parse form: %v", err)
+				w.WriteHeader(http.StatusBadRequest)
+
+				return
+			}
+
+			grantType := r.FormValue("grant_type")
+
+			w.Header().Set("Content-Type", "application/json")
+
+			switch grantType {
+			case "authorization_code":
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"access_token":  "oauth-access-token",
+					"refresh_token": "oauth-refresh-token",
+					"expires_in":    3600,
+					"id_token":      "oauth-id-token",
+					"token_type":    "Bearer",
+				})
+			case "refresh_token":
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"access_token":  "refreshed-access-token",
+					"refresh_token": "refreshed-refresh-token",
+					"expires_in":    3600,
+					"token_type":    "Bearer",
+				})
+			default:
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"error":             "unsupported_grant_type",
+					"error_description": "unknown grant type",
+				})
+			}
+
+			return
+		}
+
+		// GraphQL "me" query.
+		w.WriteHeader(http.StatusOK)
+
+		resp := `{"data":{"me":{"id":"usr-oauth","name":"OAuth User","email":"oauth@example.com"}}}`
+		if _, err := w.Write([]byte(resp)); err != nil {
+			t.Errorf("write response: %v", err)
+		}
+	}))
+}
+
+func TestLoginBrowser(t *testing.T) {
+	t.Parallel()
+
+	srv := testTokenExchangeServer(t)
+	defer srv.Close()
+
+	credPath := filepath.Join(t.TempDir(), "creds.json")
+
+	// Capture the auth URL so we can simulate the callback.
+	var capturedURL string
+
+	fixedTime := time.Date(2025, 6, 1, 12, 0, 0, 0, time.UTC)
+
+	oauthCfg := &auth.OAuthConfig{
+		OpenBrowser: func(u string) error {
+			capturedURL = u
+			return nil
+		},
+		HTTPClient:   srv.Client(),
+		TokenURL:     srv.URL,
+		AuthURL:      "https://example.com/auth",
+		CallbackAddr: "127.0.0.1:0", // Will be overridden below.
+		Now:          func() time.Time { return fixedTime },
+	}
+
+	// Use a specific port for this test.
+	callbackPort := "13360"
+	oauthCfg.CallbackAddr = "127.0.0.1:" + callbackPort
+
+	// Prompt: "1" = Yes (keep me logged in), "1" = No (encrypt).
+	var promptBuf, logBuf strings.Builder
+
+	deps := &authDeps{
+		prompter: &prompt.Prompter{
+			Stdin:  strings.NewReader("1\n1\n"),
+			Stdout: &promptBuf,
+		},
+		apiClient:   api.NewWithEndpoint(srv.URL),
+		logger:      log.New(&logBuf),
+		getenv:      func(string) string { return "" },
+		oauthConfig: oauthCfg,
+	}
+
+	// Run browser login in a goroutine since it blocks waiting for the callback.
+	errCh := make(chan error, 1)
+
+	go func() {
+		errCh <- authLogin(deps, []string{"--credentials-path", credPath})
+	}()
+
+	// Wait for the callback server to start, then simulate the browser callback.
+	time.Sleep(200 * time.Millisecond)
+
+	// Extract state from the captured auth URL.
+	if capturedURL == "" {
+		t.Fatal("expected OpenBrowser to be called with auth URL")
+	}
+
+	parsed, err := url.Parse(capturedURL)
+	if err != nil {
+		t.Fatalf("parse auth URL: %v", err)
+	}
+
+	state := parsed.Query().Get("state")
+
+	callbackURL := fmt.Sprintf("http://127.0.0.1:%s/callback?code=test-auth-code&state=%s", callbackPort, state)
+
+	resp, err := http.Get(callbackURL)
+	if err != nil {
+		t.Fatalf("GET callback: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	// Wait for login to complete.
+	if err := <-errCh; err != nil {
+		t.Fatalf("authLogin: %v", err)
+	}
+
+	// Verify saved credentials.
+	store := auth.NewFileStore(credPath)
+
+	creds, err := store.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	if creds.Type != auth.TypeAccount {
+		t.Fatalf("expected type %q, got %q", auth.TypeAccount, creds.Type)
+	}
+
+	if creds.AccessToken != "oauth-access-token" {
+		t.Fatalf("expected AccessToken %q, got %q", "oauth-access-token", creds.AccessToken)
+	}
+
+	if creds.RefreshToken != "oauth-refresh-token" {
+		t.Fatalf("expected RefreshToken %q, got %q", "oauth-refresh-token", creds.RefreshToken)
+	}
+
+	if creds.UserName != "OAuth User" {
+		t.Fatalf("expected UserName %q, got %q", "OAuth User", creds.UserName)
+	}
+
+	if creds.UserEmail != "oauth@example.com" {
+		t.Fatalf("expected UserEmail %q, got %q", "oauth@example.com", creds.UserEmail)
+	}
+
+	expectedExpiry := fixedTime.Add(3600 * time.Second)
+	if !creds.ExpiresAt.Equal(expectedExpiry) {
+		t.Fatalf("expected ExpiresAt %v, got %v", expectedExpiry, creds.ExpiresAt)
+	}
+
+	if creds.Token != "" {
+		t.Fatalf("expected empty Token for OAuth login, got %q", creds.Token)
+	}
+}
+
+func TestLoginBrowserSelectMethod(t *testing.T) {
+	t.Parallel()
+
+	srv := testTokenExchangeServer(t)
+	defer srv.Close()
+
+	credPath := filepath.Join(t.TempDir(), "creds.json")
+
+	var capturedURL string
+	callbackPort := "13361"
+
+	oauthCfg := &auth.OAuthConfig{
+		OpenBrowser: func(u string) error {
+			capturedURL = u
+			return nil
+		},
+		HTTPClient:   srv.Client(),
+		TokenURL:     srv.URL,
+		AuthURL:      "https://example.com/auth",
+		CallbackAddr: "127.0.0.1:" + callbackPort,
+		Now:          time.Now,
+	}
+
+	// Prompt: "2" = No (don't keep logged in), "1" = No encrypt.
+	var promptBuf, logBuf strings.Builder
+
+	deps := &authDeps{
+		prompter: &prompt.Prompter{
+			Stdin:  strings.NewReader("2\n1\n"),
+			Stdout: &promptBuf,
+		},
+		apiClient:   api.NewWithEndpoint(srv.URL),
+		logger:      log.New(&logBuf),
+		getenv:      func(string) string { return "" },
+		oauthConfig: oauthCfg,
+	}
+
+	errCh := make(chan error, 1)
+
+	go func() {
+		errCh <- authLogin(deps, []string{"--credentials-path", credPath})
+	}()
+
+	time.Sleep(200 * time.Millisecond)
+
+	parsed, _ := url.Parse(capturedURL)
+	state := parsed.Query().Get("state")
+
+	// Verify offline_access is NOT in scope since user chose "No".
+	scope := parsed.Query().Get("scope")
+	if strings.Contains(scope, "offline_access") {
+		t.Fatalf("expected no offline_access in scope, got %q", scope)
+	}
+
+	callbackURL := fmt.Sprintf("http://127.0.0.1:%s/callback?code=code&state=%s", callbackPort, state)
+
+	resp, err := http.Get(callbackURL)
+	if err != nil {
+		t.Fatalf("GET callback: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if err := <-errCh; err != nil {
+		t.Fatalf("authLogin: %v", err)
+	}
+}
+
+func TestAutoRefreshOnLoad(t *testing.T) {
+	t.Parallel()
+
+	srv := testTokenExchangeServer(t)
+	defer srv.Close()
+
+	credPath := filepath.Join(t.TempDir(), "creds.json")
+	store := auth.NewFileStore(credPath)
+
+	// Save expired OAuth credentials with a refresh token.
+	if err := store.Save(&auth.Credentials{
+		Type:         auth.TypeAccount,
+		AccessToken:  "expired-access",
+		RefreshToken: "valid-refresh",
+		ExpiresAt:    time.Now().Add(-time.Hour), // Expired 1 hour ago.
+		UserID:       "usr-1",
+		UserName:     "Test User",
+		UserEmail:    "test@example.com",
+	}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	fixedTime := time.Date(2025, 6, 1, 12, 0, 0, 0, time.UTC)
+
+	oauthCfg := &auth.OAuthConfig{
+		HTTPClient: srv.Client(),
+		TokenURL:   srv.URL,
+		Now:        func() time.Time { return fixedTime },
+	}
+
+	var logBuf strings.Builder
+
+	deps := &authDeps{
+		prompter: &prompt.Prompter{
+			Stdin:  strings.NewReader(""),
+			Stdout: &strings.Builder{},
+		},
+		apiClient:   api.NewWithEndpoint(srv.URL),
+		logger:      log.New(&logBuf),
+		getenv: func(key string) string {
+			if key == "EASY_RAILWAY_CREDENTIALS_PATH" {
+				return credPath
+			}
+
+			return ""
+		},
+		oauthConfig: oauthCfg,
+	}
+
+	creds, err := loadCredentials(deps)
+	if err != nil {
+		t.Fatalf("loadCredentials: %v", err)
+	}
+
+	if creds.AccessToken != "refreshed-access-token" {
+		t.Fatalf("expected refreshed AccessToken %q, got %q", "refreshed-access-token", creds.AccessToken)
+	}
+
+	if creds.RefreshToken != "refreshed-refresh-token" {
+		t.Fatalf("expected refreshed RefreshToken %q, got %q", "refreshed-refresh-token", creds.RefreshToken)
+	}
+
+	expectedExpiry := fixedTime.Add(3600 * time.Second)
+	if !creds.ExpiresAt.Equal(expectedExpiry) {
+		t.Fatalf("expected ExpiresAt %v, got %v", expectedExpiry, creds.ExpiresAt)
+	}
+
+	// Verify the refreshed credentials were persisted.
+	reloaded, err := store.Load()
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+
+	if reloaded.AccessToken != "refreshed-access-token" {
+		t.Fatalf("expected persisted AccessToken %q, got %q", "refreshed-access-token", reloaded.AccessToken)
+	}
+}
+
+func TestLoadCredentialsExpiredNoRefresh(t *testing.T) {
+	t.Parallel()
+
+	srv := testMeServer(t)
+	defer srv.Close()
+
+	credPath := filepath.Join(t.TempDir(), "creds.json")
+	store := auth.NewFileStore(credPath)
+
+	// Save expired OAuth credentials without a refresh token.
+	if err := store.Save(&auth.Credentials{
+		Type:        auth.TypeAccount,
+		AccessToken: "expired-access",
+		ExpiresAt:   time.Now().Add(-time.Hour),
+		UserID:      "usr-1",
+		UserName:    "Test User",
+		UserEmail:   "test@example.com",
+	}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	deps, _ := newTestDeps(t, "", srv, map[string]string{
+		"EASY_RAILWAY_CREDENTIALS_PATH": credPath,
+	})
+	deps.oauthConfig = auth.DefaultOAuthConfig()
+
+	_, err := loadCredentials(deps)
+	if err == nil {
+		t.Fatal("expected error for expired token without refresh token")
+	}
+
+	if !strings.Contains(err.Error(), "session expired") {
+		t.Fatalf("expected 'session expired' error, got %q", err.Error())
 	}
 }

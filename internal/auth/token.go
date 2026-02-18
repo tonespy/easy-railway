@@ -60,6 +60,31 @@ type Credentials struct {
 	EnvironmentID    string `json:"environment_id,omitempty"`
 }
 
+// BearerToken returns the token to use in Authorization headers.
+// It prefers AccessToken (OAuth) over Token (API key).
+func (c *Credentials) BearerToken() string {
+	if c.AccessToken != "" {
+		return c.AccessToken
+	}
+
+	return c.Token
+}
+
+// IsExpired reports whether the credential's access token has expired.
+// Returns false for API keys (ExpiresAt is zero).
+func (c *Credentials) IsExpired() bool {
+	if c.ExpiresAt.IsZero() {
+		return false
+	}
+
+	return time.Now().After(c.ExpiresAt)
+}
+
+// NeedsRefresh reports whether the credential is expired and has a refresh token available.
+func (c *Credentials) NeedsRefresh() bool {
+	return c.IsExpired() && c.RefreshToken != ""
+}
+
 // Store persists and retrieves Credentials.
 type Store interface {
 	// Load reads credentials. Returns (nil, nil) if no credentials are stored.

@@ -85,6 +85,20 @@ func TestRunLoginFlagParseError(t *testing.T) {
 	}
 }
 
+func TestRunLogoutRejectsAdditionalArgs(t *testing.T) {
+	code, stdout, stderr := runTestCLI("logout", "--help")
+
+	if code != 1 {
+		t.Fatalf("expected exit code 1, got %d", code)
+	}
+	if stdout != "" {
+		t.Fatalf("expected empty stdout, got %q", stdout)
+	}
+	if !strings.Contains(stderr, "logout: additional arguments are not expected") {
+		t.Fatalf("expected additional-args error in stderr, got %q", stderr)
+	}
+}
+
 func TestExtractVerbosityDefault(t *testing.T) {
 	level, args := extractVerbosity([]string{"login", "--api-key"})
 
