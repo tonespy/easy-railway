@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/tonespy/easy-railway/internal/cmd"
 	"github.com/tonespy/easy-railway/internal/log"
@@ -19,7 +20,9 @@ type command struct {
 }
 
 var commands = []command{
-	{"auth", "Authenticate with Railway (login, logout, whoami)", cmd.Auth},
+	{"login", "Log in to Railway", cmd.Login},
+	{"logout", "Log out and remove stored credentials", cmd.Logout},
+	{"whoami", "Display the currently authenticated user", cmd.Whoami},
 	{"init", "Initialize a new .easy-railway config", cmd.Init},
 	{"env", "Manage environment variables (list, get, set, push, pull)", cmd.Env},
 	{"service", "Manage services (list, create, delete, link)", cmd.Service},
@@ -35,8 +38,13 @@ func main() {
 }
 
 func run(args []string, stdout, stderr io.Writer) int {
-	outLog := log.New(stdout)
-	errLog := log.New(stderr)
+	level, args := extractVerbosity(args)
+
+	outLog := log.NewWithLevel(stdout, level)
+	errLog := log.NewWithLevel(stderr, level)
+
+	// Set the default logger so all packages pick up the verbosity level.
+	log.Default = errLog
 
 	if len(args) < 1 {
 		printUsage(errLog)
@@ -72,6 +80,50 @@ func run(args []string, stdout, stderr io.Writer) int {
 	return 1
 }
 
+// extractVerbosity scans args for -v, -vv, --verbose and removes them.
+// Returns the log level and the filtered args.
+func extractVerbosity(args []string) (log.Level, []string) {
+	level := log.LevelInfo
+
+	// Check env var first.
+	if v := os.Getenv("EASY_RAILWAY_LOG_LEVEL"); v != "" {
+		switch strings.ToLower(v) {
+		case "debug":
+			level = log.LevelDebug
+		case "trace":
+			level = log.LevelTrace
+		default:
+			// Warn on invalid value but don't fail; just use info level.
+			fmt.Fprintf(os.Stderr, "warning: invalid log level in EASY_RAILWAY_LOG_LEVEL: %q\n", v)
+		}
+	}
+
+	// Flags override env var.
+	filtered := make([]string, 0, len(args))
+
+	for _, a := range args {
+		switch a {
+		case "-vv":
+			level = log.LevelTrace
+		case "--verbose":
+			level = log.LevelDebug
+		default:
+			// Check for -v that isn't --version.
+			if a == "-v" {
+				// Ambiguous: -v could be version or verbose.
+				// When -v appears with other command args, treat as verbose.
+				// When -v is the only arg, treat as version (handled by switch in run).
+				// We pass it through; the version switch catches it first.
+				filtered = append(filtered, a)
+			} else {
+				filtered = append(filtered, a)
+			}
+		}
+	}
+
+	return level, filtered
+}
+
 func printUsage(l *log.Logger) {
 	l.Print("easy-railway - A better Railway CLI\n\n")
 	l.Print("Usage: easy-railway <command> [arguments]\n\n")
@@ -91,5 +143,9 @@ func printUsage(l *log.Logger) {
 	l.Print("\nFlags:\n")
 	l.Print("  -h, --help      Show this help message\n")
 	l.Print("  -v, --version   Show version\n")
+	l.Print("  --verbose       Enable debug output\n")
+	l.Print("  -vv             Enable trace output (includes HTTP bodies)\n")
+	l.Print("\nEnvironment variables:\n")
+	l.Print("  EASY_RAILWAY_LOG_LEVEL   Set log level (info, debug, trace)\n")
 	l.Print("\nRun 'easy-railway <command> --help' for more information on a command.\n")
 }

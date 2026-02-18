@@ -71,22 +71,8 @@ func TestRunUnknownCommandWritesErrorToStderr(t *testing.T) {
 	}
 }
 
-func TestRunSubcommandUsageError(t *testing.T) {
-	code, stdout, stderr := runTestCLI("auth")
-
-	if code != 1 {
-		t.Fatalf("expected exit code 1, got %d", code)
-	}
-	if stdout != "" {
-		t.Fatalf("expected empty stdout, got %q", stdout)
-	}
-	if !strings.Contains(stderr, "usage: easy-railway auth <login | logout | whoami>") {
-		t.Fatalf("expected auth usage error in stderr, got %q", stderr)
-	}
-}
-
-func TestRunSubcommandFlagParseError(t *testing.T) {
-	code, stdout, stderr := runTestCLI("auth", "--unknown-flag")
+func TestRunLoginFlagParseError(t *testing.T) {
+	code, stdout, stderr := runTestCLI("login", "--unknown-flag")
 
 	if code != 1 {
 		t.Fatalf("expected exit code 1, got %d", code)
@@ -96,5 +82,52 @@ func TestRunSubcommandFlagParseError(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "flag provided but not defined: -unknown-flag") {
 		t.Fatalf("expected parse error in stderr, got %q", stderr)
+	}
+}
+
+func TestRunLogoutRejectsAdditionalArgs(t *testing.T) {
+	code, stdout, stderr := runTestCLI("logout", "--help")
+
+	if code != 1 {
+		t.Fatalf("expected exit code 1, got %d", code)
+	}
+	if stdout != "" {
+		t.Fatalf("expected empty stdout, got %q", stdout)
+	}
+	if !strings.Contains(stderr, "logout: unexpected arguments") {
+		t.Fatalf("expected additional-args error in stderr, got %q", stderr)
+	}
+}
+
+func TestExtractVerbosityDefault(t *testing.T) {
+	level, args := extractVerbosity([]string{"login", "--api-key"})
+
+	if level != 0 {
+		t.Fatalf("expected LevelInfo (0), got %d", level)
+	}
+	if len(args) != 2 {
+		t.Fatalf("expected 2 args, got %d", len(args))
+	}
+}
+
+func TestExtractVerbosityVV(t *testing.T) {
+	level, args := extractVerbosity([]string{"-vv", "login", "--api-key"})
+
+	if level != 2 {
+		t.Fatalf("expected LevelTrace (2), got %d", level)
+	}
+	if len(args) != 2 {
+		t.Fatalf("expected 2 args after stripping -vv, got %d: %v", len(args), args)
+	}
+}
+
+func TestExtractVerbosityVerbose(t *testing.T) {
+	level, args := extractVerbosity([]string{"--verbose", "whoami"})
+
+	if level != 1 {
+		t.Fatalf("expected LevelDebug (1), got %d", level)
+	}
+	if len(args) != 1 {
+		t.Fatalf("expected 1 arg after stripping --verbose, got %d: %v", len(args), args)
 	}
 }
