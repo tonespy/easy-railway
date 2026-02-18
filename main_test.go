@@ -94,7 +94,7 @@ func TestRunLogoutRejectsAdditionalArgs(t *testing.T) {
 	if stdout != "" {
 		t.Fatalf("expected empty stdout, got %q", stdout)
 	}
-	if !strings.Contains(stderr, "logout: additional arguments are not expected") {
+	if !strings.Contains(stderr, "logout: unexpected arguments") {
 		t.Fatalf("expected additional-args error in stderr, got %q", stderr)
 	}
 }

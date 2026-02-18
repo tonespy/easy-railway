@@ -56,7 +56,7 @@ func Login(args []string) error {
 // Logout handles the logout command.
 func Logout(args []string) error {
 	if len(args) > 0 {
-		return fmt.Errorf("logout: additional arguments are not expected: %q", args)
+		return fmt.Errorf("logout: unexpected arguments (expected none, got %d)", len(args))
 	}
 
 	return authLogout(defaultAuthDeps())
@@ -65,7 +65,7 @@ func Logout(args []string) error {
 // Whoami handles the whoami command.
 func Whoami(args []string) error {
 	if len(args) > 0 {
-		return fmt.Errorf("whoami: additional arguments are not expected: %q", args)
+		return fmt.Errorf("whoami: unexpected arguments (expected none, got %d)", len(args))
 	}
 
 	return authWhoami(defaultAuthDeps())
@@ -477,11 +477,21 @@ func buildStore(deps *authDeps, credentialsPath, encryptFlag string) (auth.Store
 // resolveCredPath resolves the credential file path using flag → env → default.
 func resolveCredPath(deps *authDeps, flagValue string) (string, error) {
 	if flagValue != "" {
-		return flagValue, nil
+		p, err := filepath.Abs(filepath.Clean(flagValue))
+		if err != nil {
+			return "", fmt.Errorf("resolve credentials path: %w", err)
+		}
+
+		return p, nil
 	}
 
 	if v := deps.getenv("EASY_RAILWAY_CREDENTIALS_PATH"); v != "" {
-		return v, nil
+		p, err := filepath.Abs(filepath.Clean(v))
+		if err != nil {
+			return "", fmt.Errorf("resolve credentials path: %w", err)
+		}
+
+		return p, nil
 	}
 
 	home, err := os.UserHomeDir()

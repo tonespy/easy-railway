@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"html"
 	"io"
 	"net"
 	"net/http"
@@ -139,9 +140,10 @@ func ListenForCallback(ctx context.Context, cfg *OAuthConfig, expectedState stri
 				desc = errParam
 			}
 
+			escDesc := html.EscapeString(desc)
 			w.Header().Set("Content-Type", "text/html")
 			w.WriteHeader(http.StatusOK)
-			_, _ = fmt.Fprintf(w, callbackErrorHTML, desc)
+			_, _ = fmt.Fprintf(w, callbackErrorHTML, escDesc)
 			resultCh <- callbackResult{Err: fmt.Errorf("oauth: %s", desc)}
 
 			return
@@ -153,7 +155,7 @@ func ListenForCallback(ctx context.Context, cfg *OAuthConfig, expectedState stri
 		if code == "" {
 			w.Header().Set("Content-Type", "text/html")
 			w.WriteHeader(http.StatusBadRequest)
-			_, _ = fmt.Fprintf(w, callbackErrorHTML, "missing authorization code")
+			_, _ = fmt.Fprintf(w, callbackErrorHTML, html.EscapeString("missing authorization code in callback"))
 			resultCh <- callbackResult{Err: fmt.Errorf("oauth: missing authorization code")}
 
 			return
@@ -297,7 +299,12 @@ func openBrowser(rawURL string) error {
 	case "linux":
 		cmd = exec.CommandContext(context.Background(), "xdg-open", rawURL)
 	case "windows":
-		cmd = exec.CommandContext(context.Background(), "cmd", "/c", "start", rawURL)
+		cmd = exec.CommandContext(
+			context.Background(),
+			"rundll32",
+			"url.dll,FileProtocolHandler",
+			rawURL,
+		)
 	default:
 		return fmt.Errorf("unsupported platform: %s", runtime.GOOS)
 	}

@@ -92,6 +92,9 @@ func extractVerbosity(args []string) (log.Level, []string) {
 			level = log.LevelDebug
 		case "trace":
 			level = log.LevelTrace
+		default:
+			// Warn on invalid value but don't fail; just use info level.
+			fmt.Fprintf(os.Stderr, "warning: invalid log level in EASY_RAILWAY_LOG_LEVEL: %q\n", v)
 		}
 	}
 

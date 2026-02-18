@@ -810,13 +810,13 @@ func TestLoginBrowser(t *testing.T) {
 	credPath := filepath.Join(t.TempDir(), "creds.json")
 
 	// Capture the auth URL so we can simulate the callback.
-	var capturedURL string
+	capturedURL := make(chan string, 1)
 
 	fixedTime := time.Date(2025, 6, 1, 12, 0, 0, 0, time.UTC)
 
 	oauthCfg := &auth.OAuthConfig{
 		OpenBrowser: func(u string) error {
-			capturedURL = u
+			capturedURL <- u
 			return nil
 		},
 		HTTPClient:   srv.Client(),
@@ -851,15 +851,15 @@ func TestLoginBrowser(t *testing.T) {
 		errCh <- authLogin(deps, []string{"--credentials-path", credPath})
 	}()
 
-	// Wait for the callback server to start, then simulate the browser callback.
-	time.Sleep(200 * time.Millisecond)
-
-	// Extract state from the captured auth URL.
-	if capturedURL == "" {
-		t.Fatal("expected OpenBrowser to be called with auth URL")
+	// Wait for OpenBrowser to be called with the auth URL.
+	var authURLStr string
+	select {
+	case authURLStr = <-capturedURL:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for OpenBrowser to be called")
 	}
 
-	parsed, err := url.Parse(capturedURL)
+	parsed, err := url.Parse(authURLStr)
 	if err != nil {
 		t.Fatalf("parse auth URL: %v", err)
 	}
@@ -925,12 +925,12 @@ func TestLoginBrowserSelectMethod(t *testing.T) {
 
 	credPath := filepath.Join(t.TempDir(), "creds.json")
 
-	var capturedURL string
+	capturedURL := make(chan string, 1)
 	callbackPort := "13361"
 
 	oauthCfg := &auth.OAuthConfig{
 		OpenBrowser: func(u string) error {
-			capturedURL = u
+			capturedURL <- u
 			return nil
 		},
 		HTTPClient:   srv.Client(),
@@ -960,9 +960,14 @@ func TestLoginBrowserSelectMethod(t *testing.T) {
 		errCh <- authLogin(deps, []string{"--credentials-path", credPath})
 	}()
 
-	time.Sleep(200 * time.Millisecond)
+	var authURLStr string
+	select {
+	case authURLStr = <-capturedURL:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for OpenBrowser to be called")
+	}
 
-	parsed, _ := url.Parse(capturedURL)
+	parsed, _ := url.Parse(authURLStr)
 	state := parsed.Query().Get("state")
 
 	// Verify offline_access is NOT in scope since user chose "No".

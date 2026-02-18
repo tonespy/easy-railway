@@ -193,6 +193,10 @@ func (s *EncryptedStore) Load() (*Credentials, error) {
 		return nil, fmt.Errorf("decrypt credentials: file too short")
 	}
 
+	if string(raw[:len(magicHeader)]) != string(magicHeader) {
+		return nil, fmt.Errorf("decrypt credentials: not an encrypted credentials file (missing ERENC header)")
+	}
+
 	offset := len(magicHeader)
 	salt := raw[offset : offset+saltLen]
 	nonce := raw[offset+saltLen : offset+saltLen+nonceLen]
@@ -292,11 +296,21 @@ func TokenFromEnv() string {
 //  3. ~/.easy-railway/credentials.json (default).
 func ResolvePath(flagValue string) (string, error) {
 	if flagValue != "" {
-		return flagValue, nil
+		p, err := filepath.Abs(filepath.Clean(flagValue))
+		if err != nil {
+			return "", fmt.Errorf("resolve credentials path: %w", err)
+		}
+
+		return p, nil
 	}
 
 	if v := os.Getenv("EASY_RAILWAY_CREDENTIALS_PATH"); v != "" {
-		return v, nil
+		p, err := filepath.Abs(filepath.Clean(v))
+		if err != nil {
+			return "", fmt.Errorf("resolve credentials path: %w", err)
+		}
+
+		return p, nil
 	}
 
 	home, err := os.UserHomeDir()
